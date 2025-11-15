@@ -1,45 +1,52 @@
-name: Build & Deploy to Terraform Server
+name: Deploy Next.js to EC2 using ECR
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v3
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Build and push image
-        run: |
-          IMAGE="${{ secrets.DOCKER_IMAGE }}:${{ github.sha }}"
-          docker build -t "${IMAGE}" .
-          docker push "${IMAGE}"
-          echo "IMAGE=${IMAGE}" >> $GITHUB_ENV
+    - name: Login to Amazon ECR
+      run: |
+        aws ecr get-login-password \
+        | docker login --username AWS --password-stdin ${{ secrets.ECR_REPO_URL }}
 
-      - name: Copy deploy script to Terraform server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_IP }}            # the IP of your workstation (13.200.225.62)
-          username: ubuntu
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: 22
-          source: "scripts/deploy.sh"
-          target: "/home/ubuntu/deploy.sh"
+    - name: Build Docker image
+      run: |
+        docker build -t nextjs-app .
 
-      - name: Trigger remote deploy
-        uses: appleboy/ssh-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ubuntu
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            chmod +x /home/ubuntu/deploy.sh
-            /home/ubuntu/deploy.sh $IMAGE
+    - name: Tag image
+      run: |
+        docker tag nextjs-app:latest ${{ secrets.ECR_REPO_URL }}:latest
+
+    - name: Push Docker image to ECR
+      run: |
+        docker push ${{ secrets.ECR_REPO_URL }}:latest
+
+    - name: Upload SSH key
+      run: |
+        echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+        chmod 600 key.pem
+
+    - name: Deploy on EC2
+      run: |
+        ssh -o StrictHostKeyChecking=no -i key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          sudo docker pull ${{ secrets.ECR_REPO_URL }}:latest
+          sudo docker stop nextjs-container || true
+          sudo docker rm nextjs-container || true
+          sudo docker run -d -p 3000:3000 --name nextjs-container ${{ secrets.ECR_REPO_URL }}:latest
+        EOF
