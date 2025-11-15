@@ -1,5 +1,12 @@
-FROM nginx:alpine
-COPY . /usr/share/nginx/html
-EXPOSE 9000
-CMD ["nginx", "-g", "daemon off;"]
+# Standalone Next.js build
+RUN npm run build
 
+FROM node:18-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/public ./public
+
+EXPOSE 3000
+CMD ["node", "server.js"]
